@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from typing_extensions import ClassVar, Optional, Dict
+from typing_extensions import ClassVar, Optional, Dict, Any
 
 from krrood.entity_query_language.rules.conclusion import Conclusion
 from krrood.entity_query_language.rules.conclusion_selector import ConclusionSelector
@@ -20,12 +20,17 @@ from krrood.entity_query_language.core.base_expressions import (
     SymbolicExpression,
     Filter,
 )
-from krrood.entity_query_language.core.variable import Variable, Literal
+from krrood.entity_query_language.core.variable import (
+    Variable,
+    Literal,
+    InstantiatedVariable,
+)
 from krrood.entity_query_language.core.mapped_variable import (
     MappedVariable,
     Attribute,
     Index,
     FlatVariable,
+    Call,
 )
 from krrood.entity_query_language.operators.comparator import Comparator
 
@@ -105,14 +110,13 @@ class QueryGraph:
         return visualizer.render()
 
     @staticmethod
-    def get_expression_name(expression: SymbolicExpression) -> str:
+    def get_expression_name(expression: Any) -> str:
         """
         Retrieves the name of a symbolic expression for visualization purposes.
 
         :param expression: The symbolic expression to get the name for.
         :type expression: SymbolicExpression
         :return: The name of the expression.
-        :rtype: str
         """
         match expression:
             case Attribute():
@@ -121,10 +125,20 @@ class QueryGraph:
                 return f"[{expression._name_.split('[')[-1]}"
             case FlatVariable():
                 return "Flatten"
+            case Call():
+                expression: Call
+                args = [
+                    QueryGraph.get_expression_name(arg) for arg in expression._args_
+                ]
+                kwargs = [f"{k}={v}" for k, v in expression._kwargs_.items()]
+                args_and_kwargs = args + kwargs
+                return f"({','.join(args_and_kwargs)})"
             case Query():
                 return f"({','.join(QueryGraph.get_expression_name(v) for v in expression._selected_variables_)})"
-            case _:
+            case SymbolicExpression():
                 return expression._name_
+            case _:
+                return repr(expression)
 
     def construct_graph(
         self,

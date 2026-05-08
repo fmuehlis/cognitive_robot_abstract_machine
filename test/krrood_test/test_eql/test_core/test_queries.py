@@ -142,7 +142,9 @@ def test_generate_with_using_attribute_and_callables(handles_and_containers_worl
 
     def generate_handles():
         B = variable(Body, domain=world.bodies)
-        yield from an(entity(B).where(B.name.startswith("Handle"))).evaluate()
+        query = an(entity(B).where(B.name.startswith("Handle")))
+        visualize_query_graph(query)
+        yield from query.evaluate()
 
     handles = list(generate_handles())
     assert len(handles) == 3, "Should generate 3 handles."
@@ -618,7 +620,7 @@ def test_generate_with_using_inherited_predicate(handles_and_containers_world):
             ),
         )
     )
-
+    visualize_query_graph(query)
     body_pairs = list(query.evaluate())
     body_pairs = [
         (body_pair[body1], body_pair[body2], body_pair[body3])
