@@ -701,19 +701,14 @@ def _import_module_safely(
         return importlib.import_module(module_name, package=package_name)
     except ModuleNotFoundError as e:
         if not package_name:
-            return e
-        try:
-            if module_name.startswith(".") and package_name:
-                full_name = resolve_name(module_name, package_name)
-            else:
-                full_name = f"{package_name}.{module_name}"
-            if full_name in sys.modules:
-                return sys.modules[full_name]
-            return importlib.import_module(full_name)
-        except (ModuleNotFoundError, ImportError) as e:
-            return e
-    except ImportError as e:
-        return e
+            raise e
+        if module_name.startswith(".") and package_name:
+            full_name = resolve_name(module_name, package_name)
+        else:
+            full_name = f"{package_name}.{module_name}"
+        if full_name in sys.modules:
+            return sys.modules[full_name]
+        return importlib.import_module(full_name)
 
 
 def get_module_object(
@@ -793,8 +788,6 @@ def _handle_import_node(
         module_name = alias.name
         asname = alias.asname or alias.name
         module = _import_module_safely(module_name, package_name)
-        if isinstance(module, Exception):
-            raise module
         scope[asname] = module
 
 
@@ -835,9 +828,6 @@ def _handle_import_from_node(
         module = _import_module_safely(
             f"{resolved_package_name}.{resolved_module_name}", None
         )
-
-    if isinstance(module, Exception):
-        raise module
 
     for alias in node.names:
         name = alias.name
