@@ -1,22 +1,25 @@
-import pytest
+import operator
 from dataclasses import dataclass
+
+from krrood.entity_query_language.core.base_expressions import SymbolicExpression
+from krrood.entity_query_language.core.mapped_variable import Attribute
+from krrood.entity_query_language.evaluation import is_condition_participant
+from krrood.entity_query_language.explanation import (
+    explain_inference,
+    register_inference, monitored,
+)
 from krrood.entity_query_language.factories import (
     inference,
     entity,
     variable_from,
     and_,
     or_,
-    not_,
+    not_, variable, match_variable,
 )
-from krrood.entity_query_language.explanation import (
-    explain_inference,
-    register_inference, monitored,
-)
-from krrood.entity_query_language.query.query import Query
-from krrood.rustworkx_utils import GraphVisualizer
-from krrood.entity_query_language.query_graph import QueryGraph
-from krrood.entity_query_language.evaluation import is_condition_participant
 from krrood.entity_query_language.operators.comparator import Comparator
+from krrood.entity_query_language.query.query import Query
+from krrood.entity_query_language.query_graph import QueryGraph
+from ..dataset.semantic_world_like_classes import Handle, PrismaticConnection, FixedConnection, Drawer
 
 
 @dataclass(frozen=True)
@@ -701,3 +704,38 @@ def test_explanation_condition_graph_and_visualize():
     fig, ax = explanation.condition_graph().visualize()
     assert fig is not None
     assert ax is not None
+
+
+def test_nested_rule_explanation(doors_and_drawers_world):
+    world = doors_and_drawers_world
+    handle = variable(Handle, world.bodies)
+    prismatic_connection = variable(PrismaticConnection, world.connections)
+    fixed_connection = match_variable(FixedConnection, world.connections)(
+        parent=prismatic_connection.child, child=handle
+    )
+    found_drawers = inference(Drawer)(
+        container=fixed_connection.parent, handle=fixed_connection.child
+    ).tolist()
+    explanation = explain_inference(found_drawers[0])
+    assert explanation is not None
+    assert isinstance(explanation.query_root, SymbolicExpression)
+    for i, condition_and_bindings in enumerate(explanation.get_satisfied_conditions_and_their_bindings()):
+        condition = condition_and_bindings.condition
+        bindings = condition_and_bindings.bindings
+        assert isinstance(condition, Comparator)
+        assert condition.operation is operator.eq
+        if i == 0:
+            assert isinstance(condition.left, Attribute)
+            assert condition.left._attribute_name_ == "parent"
+            assert condition.left._child_._type_ is FixedConnection
+            assert condition.right._child_._type_ is PrismaticConnection
+            assert isinstance(bindings[condition.right._child_._id_], PrismaticConnection)
+        else:
+            assert isinstance(condition.left, Attribute)
+            assert condition.left._attribute_name_ == "child"
+            assert condition.left._child_._type_ is FixedConnection
+            assert isinstance(bindings[condition.left._child_._id_], FixedConnection)
+    assert explanation.get_satisfied_conditions_as_string() == (
+        '(FixedConnection.parent == PrismaticConnection.child)'
+        '\nAND (FixedConnection.child == Handle)')
+    explanation.condition_graph().visualize(filename="drawer_explanation.pdf")

@@ -364,7 +364,7 @@ def add(variable: Any, value: Any) -> None:
 
 def inference(
     type_: Type[T],
-) -> Union[Type[T], Callable[[Any], Variable[T]]]:
+) -> Union[Callable[[], Union[T, InstantiatedVariable[T]]]]:
     """
     This returns a factory function that creates a new variable of the given type and takes keyword arguments for the
     type constructor.

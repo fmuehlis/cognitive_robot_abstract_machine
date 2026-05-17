@@ -8,6 +8,7 @@ from numpy.ma.testutils import (
 import semantic_digital_twin
 from krrood.entity_query_language.core.base_expressions import SymbolicExpression
 from krrood.entity_query_language.core.mapped_variable import MappedVariable, Attribute
+from krrood.entity_query_language.core.variable import InstantiatedVariable
 from krrood.entity_query_language.explanation import explain_inference
 from krrood.entity_query_language.factories import entity, variable, in_, inference, an
 from krrood.entity_query_language.operators.comparator import Comparator
@@ -213,27 +214,13 @@ def test_explain_inferred_semantic_annotations(apartment_world_setup):
     found_semantic_annotations = list(world_reasoner.infer_semantic_annotations())
     explanation = explain_inference(next(ann for ann in found_semantic_annotations if isinstance(ann, Drawer)))
     assert explanation is not None
-    assert isinstance(explanation.query_root, SymbolicExpression)
-    for i, condition_and_bindings in enumerate(explanation.get_satisfied_conditions_and_their_bindings()):
-        condition = condition_and_bindings.condition
-        bindings = condition_and_bindings.bindings
-        assert isinstance(condition, Comparator)
-        assert condition.operation is operator.eq
-        if i == 0:
-            assert isinstance(condition.left, Attribute)
-            assert condition.left._attribute_name_ == "parent"
-            assert condition.left._child_._type_ is FixedConnection
-            assert condition.right._child_._type_ is PrismaticConnection
-            assert isinstance(bindings[condition.right._child_._id_], PrismaticConnection)
-        else:
-            assert isinstance(condition.left, Attribute)
-            assert condition.left._attribute_name_ == "child"
-            assert condition.left._child_._type_ is FixedConnection
-            assert isinstance(bindings[condition.left._child_._id_], FixedConnection)
+    assert isinstance(explanation.query_root, InstantiatedVariable)
     assert explanation.get_satisfied_conditions_as_string() == (
                 '(FixedConnection.parent == PrismaticConnection.child)'
                 '\nAND (FixedConnection.child == Handle.root)')
-    explanation.condition_graph().visualize(filename="drawer_explanation.pdf")
+    visualize = False
+    if visualize:
+        explanation.condition_graph().visualize(filename="drawer_explanation.pdf")
 
 
 def fit_rules_and_assert_semantic_annotations(
