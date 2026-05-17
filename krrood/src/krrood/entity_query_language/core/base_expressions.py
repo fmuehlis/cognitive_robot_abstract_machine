@@ -77,10 +77,6 @@ class SymbolicExpression(ABC):
     """
     The current stack of symbolic expressions that has been entered using the ``with`` statement.
     """
-    _is_false__: bool = field(init=False, repr=False, default=False)
-    """
-    Internal flag indicating current truth value of evaluation result for this expression.
-    """
     _children_: List[SymbolicExpression] = field(
         init=False, repr=False, default_factory=list
     )
@@ -130,26 +126,19 @@ class SymbolicExpression(ABC):
         except StopIteration:
             raise NoExpressionFoundForGivenID(self, id_)
 
-    @property
-    def _is_true_(self) -> bool:
+    def _compute_is_false_(self, current_value: Any) -> bool:
         """
-        :return: Whether this expression evaluates to True.
+        Compute the truth value for this expression given the current binding value.
+        Only meaningful when the eval-time parent is a TruthValueOperator; returns False otherwise.
         """
-        return not self._is_false__
-
-    @property
-    def _is_false_(self) -> bool:
-        """
-        :return: Whether this expression evaluates to False.
-        """
-        return self._is_false__
-
-    @_is_false_.setter
-    def _is_false_(self, value: bool):
-        """
-        Set the current truth value of an evaluation result for this expression.
-        """
-        self._is_false__ = value
+        if not isinstance(self._eval_parent_, TruthValueOperator):
+            return False
+        is_true = (
+            len(current_value) > 0
+            if is_iterable(current_value)
+            else bool(current_value)
+        )
+        return not is_true
 
     def tolist(self):
         """
@@ -296,7 +285,7 @@ class SymbolicExpression(ABC):
                 bindings = {}
                 sources = OperationResult({})  # empty sentinel for _evaluate__()
             if self._id_ in bindings:
-                result = OperationResult(bindings, self._is_false_, self, previous_result)
+                result = OperationResult(bindings, self._compute_is_false_(bindings[self._id_]), self, previous_result)
                 evaluation_context.on_result_yielded(expression=self, result=result)
                 yield result
             else:
@@ -617,10 +606,6 @@ class DerivedExpression(SymbolicExpression, ABC):
         """
         ...
 
-    @property
-    def _is_false_(self) -> bool:
-        return self._original_expression_._is_false_
-
     def _process_result_(self, result: OperationResult) -> Any:
         return self._original_expression_._process_result_(result)
 
@@ -789,31 +774,14 @@ class Selectable(SymbolicExpression, Generic[T], ABC):
         self, bindings: Bindings, child_result: Optional[OperationResult] = None
     ) -> OperationResult:
         """
-        Build an OperationResult instance and update the truth value based on the bindings.
+        Build an OperationResult instance with the correct truth value for this binding.
 
         :param bindings: The bindings of the result.
         :param child_result: The result of the child operation, if any.
-        :return: The OperationResult instance with an updated truth value.
+        :return: The OperationResult instance with the computed truth value.
         """
-        self._update_truth_value_(bindings[self._id_])
-        return OperationResult(bindings, self._is_false_, self, child_result)
-
-    def _update_truth_value_(self, current_value: Any) -> None:
-        """
-        Updates the truth value of the variable based on the current value.
-
-        :param current_value: The current value of the variable.
-        """
-        # Calculating the truth value is not always done for efficiency. The truth value is updated only when this
-        # operation is a child of a TruthValueOperator.
-        if not isinstance(self._parent_, TruthValueOperator):
-            return
-        is_true = (
-            len(current_value) > 0
-            if is_iterable(current_value)
-            else bool(current_value)
-        )
-        self._is_false_ = not is_true
+        is_false = self._compute_is_false_(bindings[self._id_])
+        return OperationResult(bindings, is_false, self, child_result)
 
     @cached_property
     def _type__(self):

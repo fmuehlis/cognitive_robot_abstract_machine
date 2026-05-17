@@ -107,7 +107,7 @@ class Having(Filter, BinaryExpression):
         yield from (
             OperationResult(
                 grouping_result.bindings | annotated_result.bindings,
-                self._is_false_,
+                annotated_result.is_false,
                 self,
             )
             for grouping_result in self.grouped_by._evaluate_(sources, parent=self)

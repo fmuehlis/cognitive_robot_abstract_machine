@@ -41,9 +41,8 @@ class Union(MultiArityExpression):
     def get_result_and_update_truth_value(
         self, child_result: OperationResult
     ) -> OperationResult:
-        self._is_false_ = child_result.is_false
         return OperationResult(
-            child_result.bindings, self._is_false_, self, child_result
+            child_result.bindings, child_result.is_false, self, child_result
         )
 
     def add_child(self, child: SymbolicExpression) -> None:

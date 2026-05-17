@@ -205,7 +205,18 @@ class SatisfiedConditionTracker(EvaluationObserver):
             NoExpressionFoundForGivenID,
         )
 
-        # Collect candidates: evaluated, condition participant, and truthier/not-false
+        # Build a truth map from the OperationResult chain: operand_id -> is_false.
+        # This reflects the actual truth values from this specific evaluation path,
+        # with no risk of stale state from previous passes.
+        chain_truth_map: Dict = {}
+        node = result
+        seen: set = set()
+        while node is not None and id(node) not in seen:
+            seen.add(id(node))
+            if node.operand is not None:
+                chain_truth_map[node.operand._id_] = node.is_false
+            node = node.previous_operation_result
+
         satisfied = OrderedSet()
         for expr_id in evaluated:
             try:
@@ -215,38 +226,16 @@ class SatisfiedConditionTracker(EvaluationObserver):
             if not is_condition_participant(expr):
                 continue
             if isinstance(expr, LogicalOperator):
-                if not expr._is_false_:
+                # An operator not present in the chain was short-circuited: not satisfied.
+                if not chain_truth_map.get(expr_id, True):
                     satisfied.add(expr_id)
             elif expr_id in result.bindings:
                 if result.bindings[expr_id]:
                     satisfied.add(expr_id)
 
-        # Parent-chain validation: an expression is only truly satisfied if every
-        # LogicalOperator ancestor up to the conditions root is also satisfied.
-        # This prevents children of a failed quantifier (e.g. AND inside a
-        # short-circuited Exists) from being marked satisfied based on stale
-        # _is_false_ state from a single evaluation pass.
-        final_satisfied = OrderedSet()
-        for expr_id in satisfied:
-            expr = expression._get_expression_by_id_(expr_id)
-            current = expr
-            ancestor_ok = True
-            while current is not expression:
-                current = current._parent_
-                if current is None:
-                    break
-                if not isinstance(current, LogicalOperator):
-                    continue
-                if current._id_ not in satisfied:
-                    ancestor_ok = False
-                    break
-            if ancestor_ok:
-                final_satisfied.add(expr_id)
-
-        satisfied_ids = OrderedSet(final_satisfied)
-        result.satisfied_condition_ids = satisfied_ids
+        result.satisfied_condition_ids = satisfied
         if ctx is not None:
-            ctx.data[EvaluationContextKey.SATISFIED_IDS_KEY] = satisfied_ids
+            ctx.data[EvaluationContextKey.SATISFIED_IDS_KEY] = satisfied
 
 
 class InferenceRecorder(EvaluationObserver):
@@ -257,7 +246,8 @@ class InferenceRecorder(EvaluationObserver):
     """
 
     def on_result_yielded(self, expression, result):
-        if not getattr(type(expression), "_is_monitored_", False):
+        from krrood.entity_query_language.explanation import monitored
+        if not monitored.is_monitored(type(expression)):
             return
         if expression._id_ not in result.bindings:
             return

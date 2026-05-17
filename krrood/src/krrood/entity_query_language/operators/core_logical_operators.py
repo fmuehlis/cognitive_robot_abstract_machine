@@ -49,8 +49,8 @@ class Not(LogicalOperator, UnaryExpression):
     ) -> Iterable[OperationResult]:
 
         for v in self._child_._evaluate_(sources, parent=self):
-            self._is_false_ = v.is_true
-            yield OperationResult(v.bindings, self._is_false_, self)
+            is_false = v.is_true
+            yield OperationResult(v.bindings, is_false, self)
 
 
 @dataclass(eq=False, repr=False)
@@ -67,9 +67,9 @@ class LogicalBinaryOperator(LogicalOperator, BinaryExpression, ABC):
         :return: The new bindings after evaluating the right operand.
         """
         for right_value in self.right._evaluate_(sources, parent=self):
-            self._is_false_ = right_value.is_false
+            is_false = right_value.is_false
             yield OperationResult(
-                right_value.bindings, self._is_false_, self, right_value
+                right_value.bindings, is_false, self, right_value
             )
 
 
@@ -85,10 +85,10 @@ class AND(LogicalBinaryOperator):
     ) -> Iterable[OperationResult]:
 
         for left_value in self.left._evaluate_(sources, parent=self):
-            self._is_false_ = left_value.is_false
-            if self._is_false_:
+            is_false = left_value.is_false
+            if is_false:
                 yield OperationResult(
-                    left_value.bindings, self._is_false_, self, left_value
+                    left_value.bindings, is_false, self, left_value
                 )
             else:
                 yield from self.evaluate_right(left_value)
@@ -114,9 +114,8 @@ class OR(LogicalBinaryOperator):
             if left_value.is_false:
                 yield from self.evaluate_right(left_value)
             else:
-                self._is_false_ = False
                 yield OperationResult(
-                    left_value.bindings, self._is_false_, self, left_value
+                    left_value.bindings, False, self, left_value
                 )
 
 

@@ -115,7 +115,5 @@ class Exists(QuantifiedConditional):
                 yield OperationResult(val.bindings, is_false=False, operand=self)
                 return
 
-        # Negation as failure, if it doesn't exist a variable value that satisfies the condition,
-        # then it is a failure, and we yield the original sources with is_false=True as the truth value.
-        self._is_false_ = True
+        # Negation as failure: no variable value satisfied the condition.
         yield OperationResult(sources.bindings, is_false=True, operand=self)
