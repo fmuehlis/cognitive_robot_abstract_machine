@@ -5,7 +5,7 @@ from typing_extensions import List, Any, Optional
 import operator
 
 import sqlalchemy.inspection
-from sqlalchemy import and_, or_, select, Select, func, literal, not_ as sa_not
+from sqlalchemy import and_, or_, select, Select, func, literal, case, not_ as sa_not
 from sqlalchemy.orm import Session
 
 from krrood.entity_query_language.query.query import (
@@ -22,6 +22,7 @@ from krrood.entity_query_language.core.mapped_variable import Attribute
 from krrood.entity_query_language.operators.comparator import Comparator
 from krrood.entity_query_language.operators.aggregators import Aggregator, CountAll, Count, Max, Min, Sum, Average
 
+from krrood.entity_query_language.factories import CaseWhen
 from krrood.ormatic.data_access_objects.helper import get_dao_class
 
 
@@ -464,21 +465,10 @@ class EQLTranslator:
         """
         selected = self.select_like._selected_variables_
 
-        all_attributes = all(isinstance(v, Attribute) for v in selected)
         all_variables = all(isinstance(v, Variable) and not isinstance(v, Attribute)
                             for v in selected)
 
-        if all_attributes:
-            resolver = AttributeChainResolver()
-            base_dao = resolver.extract_base_dao(selected[0])
-            if base_dao is None:
-                raise MissingDAOError(f"No DAO class found for {selected[0]}")
-
-            self.sql_query = select(base_dao)
-            columns = [self.translate_attribute(var) for var in selected]
-            self.sql_query = self.sql_query.with_only_columns(*columns)
-
-        elif all_variables:
+        if all_variables:
             dao_classes = []
             for var in selected:
                 dao_class = get_dao_class(var._type_)
@@ -489,15 +479,41 @@ class EQLTranslator:
                 dao_classes.append(dao_class)
 
             self.sql_query = select(*dao_classes)
-
         else:
-            raise UnsupportedQueryTypeError(
-                "set_of() must contain either all Attribute or all Variable expressions"
-            )
+            # Flexibler Modus: Unterstützt jeden Mix aus Spalten, Aggregatoren und CaseWhen
+            base_dao = None
+            for var in selected:
+                base_dao = self._extract_dao_from_expression(var)
+                if base_dao is not None:
+                    break
+
+            if base_dao is None:
+                raise MissingDAOError("No DAO class found for selected expressions")
+
+            self.sql_query = select(base_dao)
+            columns = [self._translate_comparator_operand(var) for var in selected]
+            self.sql_query = self.sql_query.with_only_columns(*columns)
 
         self._apply_where()
+        self._apply_group_by()
+        self._apply_having()
         self._apply_order_by()
         self._apply_limit()
+
+    def _extract_dao_from_expression(self, expression: Any) -> Optional[type]:
+        """
+        Extract the base DAO class from an expression node.
+        Handles Attribute chains and CaseWhen nodes.
+        """
+        if isinstance(expression, Attribute):
+            resolver = AttributeChainResolver()
+            return resolver.extract_base_dao(expression)
+        if isinstance(expression, CaseWhen):
+            return self._extract_dao_from_expression(expression.then_value)
+        if isinstance(expression, Aggregator):
+            if hasattr(expression, "_child_"):
+                return self._extract_dao_from_expression(expression._child_)
+        return None
 
     def _apply_where(self) -> None:
         if self.eql_query._where_expression_ is not None:
@@ -625,12 +641,28 @@ class EQLTranslator:
                 return self.translate_attribute(query)
             case Where():
                 return self.translate_query(query.condition)
+            case CaseWhen():
+                return self.translate_case_when(query)
             case ResultQuantifier():
                 return None
             case Variable():
                 return None
             case _:
                 raise UnsupportedQueryTypeError(f"Unknown query type: {type(query)}")
+
+    def translate_case_when(self, query: CaseWhen) -> Any:
+        """
+        Translate EQL-node CaseWhen in a nativ SQLAlchemy case()-construct.
+        """
+        compiled_condition = self.translate_query(query.condition)
+
+        compiled_then = self._translate_comparator_operand(query.then_value)
+
+        compiled_else = None
+        if query.else_value is not None:
+            compiled_else = self._translate_comparator_operand(query.else_value)
+
+        return case((compiled_condition, compiled_then), else_=compiled_else)
 
 
     def translate_and(self, query: AND) -> Optional[Any]:
@@ -874,6 +906,14 @@ class EQLTranslator:
             col = self.translate_query(operand._child_)
             return func.sum(col)
 
+        if isinstance(operand, CaseWhen):
+            from sqlalchemy import case
+            condition = self.translate_query(operand.condition)
+            then_value = self._translate_comparator_operand(operand.then_value)
+            if operand.else_value is not None:
+                else_value = self._translate_comparator_operand(operand.else_value)
+                return case((condition, then_value), else_=else_value)
+            return case((condition, then_value))
 
         if isinstance(operand, Literal):
             extractor = DomainValueExtractor(self.session)
