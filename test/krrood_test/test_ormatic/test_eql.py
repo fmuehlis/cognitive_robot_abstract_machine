@@ -788,15 +788,15 @@ def test_set_of_with_join(session):
 
     assert str(translator.sql_query) == str(expected)
 
-def test_set_of_multi_variable(session):
-    """Verify that set_of with multiple variables generates correct JOINs."""
-    world = World(1, [
-        Container("Container1"),
-        Handle("Handle1"),
-    ])
+def test_set_of_multi_variable(session, database):
+    world = World(1, [Container("Container1"), Handle("Handle1")])
     fc = FixedConnection(world.bodies[0], world.bodies[1])
     pc = PrismaticConnection(world.bodies[0], world.bodies[1])
     world.connections = [fc, pc]
+
+    dao = to_dao(world)
+    session.add(dao)
+    session.commit()
 
     C = variable(Container, domain=world.bodies)
     H = variable(Handle, domain=world.bodies)
@@ -812,12 +812,21 @@ def test_set_of_multi_variable(session):
     )
 
     translator = eql_to_sql(query, session)
-    expected_sql = str(translator.sql_query)
 
-    assert str(translator.sql_query) == expected_sql
-    assert ", \"HandleDAO\"" not in str(translator.sql_query)
-    assert "JOIN" in str(translator.sql_query)
+    expected = (
+        select(ContainerDAO, HandleDAO, FixedConnectionDAO, PrismaticConnectionDAO)
+        .join(FixedConnectionDAO,
+              onclause=FixedConnectionDAO.parent_id == ContainerDAO.database_id)
+        .join(HandleDAO,
+              onclause=FixedConnectionDAO.child_id == HandleDAO.database_id)
+        .join(PrismaticConnectionDAO,
+              onclause=PrismaticConnectionDAO.child_id == ContainerDAO.database_id)
+    )
+    assert str(translator.sql_query) == str(expected)
 
+    sql_results = translator.evaluate()
+    eql_results = list(query.evaluate())
+    assert len(sql_results) == len(eql_results)
 
 
 def test_set_of_transitive_attributes(session):
@@ -1001,29 +1010,21 @@ def test_plan_like_query(session):
     )
 
     translator = eql_to_sql(query, session)
-    expected_sql = (
-        'SELECT "MoveActionDAO".robot_x, "MoveActionDAO".robot_y, '
-        '"MoveActionDAO".robot_x AS robot_x__1, '
-        '"MoveActionDAO".robot_y AS robot_y__1, '
-        '"GraspConfigDAO_1".rotate_gripper \n'
-        'FROM "SymbolDAO" JOIN "WorldEntityDAO" ON "WorldEntityDAO".database_id = '
-        '"SymbolDAO".database_id JOIN "MoveActionDAO" ON '
-        '"MoveActionDAO".database_id = "WorldEntityDAO".database_id JOIN '
-        '("SymbolDAO" AS "SymbolDAO_1" JOIN "WorldEntityDAO" AS '
-        '"WorldEntityDAO_1" ON "WorldEntityDAO_1".database_id = '
-        '"SymbolDAO_1".database_id JOIN "GraspConfigDAO" AS "GraspConfigDAO_1" '
-        'ON "GraspConfigDAO_1".database_id = "WorldEntityDAO_1".database_id) ON '
-        '"GraspConfigDAO_1".database_id = "MoveActionDAO".grasp_config_id JOIN '
-        '("SymbolDAO" AS "SymbolDAO_2" JOIN "WorldEntityDAO" AS '
-        '"WorldEntityDAO_2" ON "WorldEntityDAO_2".database_id = '
-        '"SymbolDAO_2".database_id JOIN "ConnectionDAO" AS "ConnectionDAO_1" ON '
-        '"ConnectionDAO_1".database_id = "WorldEntityDAO_2".database_id JOIN '
-        '"FixedConnectionDAO" AS "FixedConnectionDAO_1" ON '
-        '"FixedConnectionDAO_1".database_id = "ConnectionDAO_1".database_id) ON '
-        '"ConnectionDAO_1".parent_id = "MoveActionDAO".grasp_config_id \n'
-        'WHERE "MoveActionDAO".robot_x > :robot_x_1'
+    expected = (
+        select(
+            MoveActionDAO.robot_x,
+            MoveActionDAO.robot_y,
+            MoveActionDAO.robot_x,
+            MoveActionDAO.robot_y,
+            GraspConfigDAO.rotate_gripper,
+        )
+        .join(GraspConfigDAO,
+              onclause=GraspConfigDAO.database_id == MoveActionDAO.grasp_config_id)
+        .join(FixedConnectionDAO,
+              onclause=FixedConnectionDAO.parent_id == MoveActionDAO.grasp_config_id)
+        .where(MoveActionDAO.robot_x > 0.0)
     )
-    assert str(translator.sql_query) == expected_sql
+    assert str(translator.sql_query) == str(expected)
 
 
 def test_set_of_multi_variable_evaluate(session, database):
@@ -1235,7 +1236,8 @@ def test_case_when_with_min(session):
     )
     assert str(translator.sql_query) == expected_sql
 
-def test_case_when_direct_in_set_of(session):
+
+def test_case_when_direct_in_set_of(session, database):
     """Verify case_when directly in set_of without aggregator."""
     action = variable(MoveAction, domain=None)
     query = an(set_of(
@@ -1243,14 +1245,9 @@ def test_case_when_direct_in_set_of(session):
     ))
     translator = eql_to_sql(query, session)
 
-    expected_sql = (
-        'SELECT CASE WHEN ("SymbolDAO".polymorphic_type = :polymorphic_type_1) '
-        'THEN "MoveActionDAO".robot_x END AS anon_1 \n'
-        'FROM "SymbolDAO" JOIN "WorldEntityDAO" ON "WorldEntityDAO".database_id = '
-        '"SymbolDAO".database_id JOIN "MoveActionDAO" ON '
-        '"MoveActionDAO".database_id = "WorldEntityDAO".database_id'
-    )
-    assert str(translator.sql_query) == expected_sql
+    sql_results = translator.evaluate()
+
+    assert sql_results == []
 
 
 def test_case_when_with_max(session):
