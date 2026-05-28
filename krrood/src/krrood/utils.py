@@ -633,18 +633,26 @@ def get_generic_type_params(
     :return: A list of concrete type parameters
     """
     params = []
-    for base in getattr(cls, "__orig_bases__", []):
-        base_origin = get_origin(base)
-        if not base_origin:
-            continue
-        if not (include_root_generic_base or base_origin is Generic):
-            continue
-        if not (
-            include_specialized_generic_base or issubclass(base_origin, generic_base)
-        ):
-            continue
+    if include_root_generic_base:
+        # Use __parameters__ to get the class's own unbound TypeVars.
+        params.extend(list(getattr(cls, "__parameters__", [])))
 
-        params.extend(list(get_args(base)))
+    if include_specialized_generic_base:
+        for base in getattr(cls, "__orig_bases__", []):
+            base_origin = get_origin(base)
+            if (
+                not base_origin
+                or base_origin is Generic
+                or not issubclass(base_origin, generic_base)
+            ):
+                continue
+            for arg in get_args(base):
+                if not isinstance(arg, TypeVar):
+                    params.append(arg)
+                elif not include_root_generic_base:
+                    # If we specifically excluded root params, we might still want
+                    # TypeVars that are being passed to this specialized base.
+                    params.append(arg)
 
     return params
 

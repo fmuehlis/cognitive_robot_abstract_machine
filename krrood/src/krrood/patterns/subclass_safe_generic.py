@@ -18,6 +18,7 @@ from typing_extensions import (
     List,
     get_origin,
     get_args,
+    assert_never,
 )
 
 from krrood.class_diagrams.utils import (
@@ -28,6 +29,7 @@ from krrood.utils import (
     get_generic_type_params,
     T,
     ensure_hashable,
+    memoize,
 )
 
 if TYPE_CHECKING:
@@ -148,14 +150,24 @@ class AbstractSubClassSafeGeneric(ABC):
                 continue
 
             # Map the root TypeVars of the base to the concrete arguments provided here
-            root_parameters = base_origin.get_generic_types()
-            for old_type, new_type in zip(root_parameters, resolved_types):
-                if old_type is not new_type and new_type is not None:
+            if resolved_types:
+                root_parameters = base_origin.get_generic_types(True, False)
+                if len(root_parameters) != len(resolved_types):
+                    assert_never(base)
+
+                for old_type, new_type in zip(root_parameters, resolved_types):
+                    if (
+                        not isinstance(old_type, TypeVar)
+                        or old_type is new_type
+                        or new_type is None
+                    ):
+                        continue
                     substitutions[ensure_hashable(old_type)] = new_type
 
             # Recursively pull substitutions already defined by the parent
-            if base_origin is not cls:
-                substitutions.update(base_origin._get_generic_type_substitutions())
+            if base_origin is cls:
+                continue
+            substitutions.update(base_origin._get_generic_type_substitutions())
 
         if substitutions:
             substitutions = cls._resolve_substitutions_transitively(substitutions)
@@ -210,20 +222,22 @@ class AbstractSubClassSafeGeneric(ABC):
         return None, ()
 
     @classmethod
-    @lru_cache
+    @memoize
     def get_generic_types(
         cls,
-        from_root_generic_base: bool = True,
-        from_specialized_generic_base: bool = True,
+        include_root_generic_base: bool = True,
+        include_specialized_generic_base: bool = True,
     ) -> List[Type]:
         """
+        :param include_root_generic_base: Whether to include type parameters the class gets from its own typing.Generic directly.
+        :param include_specialized_generic_base: Whether to include type parameters from superclasses that are generic, which are not typing.Generic.
         :return: The concrete generic type parameters bound for this class, in declaration order.
         """
         return get_generic_type_params(
             cls,
             AbstractSubClassSafeGeneric,
-            from_root_generic_base,
-            from_specialized_generic_base,
+            include_root_generic_base,
+            include_specialized_generic_base,
         )
 
 
