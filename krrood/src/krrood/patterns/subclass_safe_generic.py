@@ -47,8 +47,6 @@ class AbstractSubClassSafeGeneric(ABC):
     ``AbstractSubClassSafeGeneric`` similar to how it is done in ``SubClassSafeGeneric``.
     """
 
-    _subclass_safe_substitutions: ClassVar[Dict[Type, Type]] = {}
-
     def __init_subclass__(cls, **kwargs):
         """
         Automatically updates the field types that use the generic type parameters with the new
@@ -123,7 +121,8 @@ class AbstractSubClassSafeGeneric(ABC):
             return {}
 
         # Use a class-level cache to avoid redundant recursive calculations
-        if cls._subclass_safe_substitutions:
+        # Check ONLY the current class's dict to avoid using an inherited cache
+        if "_subclass_safe_substitutions" in cls.__dict__:
             return cls._subclass_safe_substitutions
 
         substitutions = {}
@@ -143,7 +142,11 @@ class AbstractSubClassSafeGeneric(ABC):
                     include_specialized_generic_base=False,
                 )
                 if len(root_parameters) != len(resolved_types):
-                    assert_never(base)
+                    raise TypeError(
+                        f"The number of generic type parameters in {base_origin} "
+                        f"({len(root_parameters)}) does not match the number of "
+                        f"provided arguments ({len(resolved_types)})."
+                    )
 
                 for old_type, new_type in zip(root_parameters, resolved_types):
                     if (
