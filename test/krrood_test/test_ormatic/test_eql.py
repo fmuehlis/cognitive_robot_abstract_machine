@@ -1,5 +1,5 @@
 import pytest
-from sqlalchemy import select, func
+from sqlalchemy import select, func, case
 from sqlalchemy.exc import MultipleResultsFound
 from sqlalchemy.orm import aliased
 from sqlalchemy.dialects import postgresql
@@ -27,6 +27,8 @@ from ..dataset.ormatic_interface import (
     GraspConfigDAO,
     ContainerDAO,
     HandleDAO,
+    SymbolDAO,
+    WorldEntityDAO,
 )
 from krrood.entity_query_language.factories import (
     entity,
@@ -289,8 +291,19 @@ def test_complicated_equal(session, database):
     assert eql_result[0].name == "Container2"
 
     translator = eql_to_sql(query, session)
-    expected_sql = str(translator.sql_query)
-    assert str(translator.sql_query) == expected_sql
+
+    # Verify structural properties of the generated SQL
+    sql = str(translator.sql_query)
+    assert ", \"HandleDAO\"" not in sql
+    assert ", \"ContainerDAO\"" not in sql
+    assert "JOIN" in sql
+
+    # Verify EQL and SQL return the same result
+    eql_result = list(query.evaluate())
+    # the() returns a single object, not a list
+    sql_result = translator.evaluate()
+
+    assert eql_result[0].name == sql_result.name
 
 
 def test_contains(session, database):
@@ -860,6 +873,8 @@ def test_set_of_move_action_transitive(session):
     This simulates the pattern of MoveToReachDAO.robot_x and
     MoveToReachDAO.grasp_description.rotate_gripper from pycram.
     """
+    from sqlalchemy.orm import aliased
+
     move = variable(type_=MoveAction, domain=[])
     query = an(set_of(
         move.robot_x,
@@ -871,21 +886,23 @@ def test_set_of_move_action_transitive(session):
     ))
 
     translator = eql_to_sql(query, session)
-    expected_sql = (
-        'SELECT "MoveActionDAO".robot_x, "MoveActionDAO".robot_y, '
-        '"MoveActionDAO".hip_rotation, "GraspConfigDAO_1".rotate_gripper, '
-        '"GraspConfigDAO_1".approach_direction, '
-        '"GraspConfigDAO_1".manipulation_offset \n'
-        'FROM "SymbolDAO" JOIN "WorldEntityDAO" ON "WorldEntityDAO".database_id = '
-        '"SymbolDAO".database_id JOIN "MoveActionDAO" ON '
-        '"MoveActionDAO".database_id = "WorldEntityDAO".database_id JOIN '
-        '("SymbolDAO" AS "SymbolDAO_1" JOIN "WorldEntityDAO" AS '
-        '"WorldEntityDAO_1" ON "WorldEntityDAO_1".database_id = '
-        '"SymbolDAO_1".database_id JOIN "GraspConfigDAO" AS "GraspConfigDAO_1" '
-        'ON "GraspConfigDAO_1".database_id = "WorldEntityDAO_1".database_id) ON '
-        '"GraspConfigDAO_1".database_id = "MoveActionDAO".grasp_config_id'
+
+    grasp_alias = aliased(GraspConfigDAO, flat=True)
+
+    expected = (
+        select(
+            MoveActionDAO.robot_x,
+            MoveActionDAO.robot_y,
+            MoveActionDAO.hip_rotation,
+            grasp_alias.rotate_gripper,
+            grasp_alias.approach_direction,
+            grasp_alias.manipulation_offset,
+        )
+        .join(grasp_alias,
+              onclause=grasp_alias.database_id == MoveActionDAO.grasp_config_id)
     )
-    assert str(translator.sql_query) == expected_sql
+
+    assert str(translator.sql_query) == str(expected)
 
 
 def test_set_of_with_where(session):
@@ -903,6 +920,14 @@ def test_set_of_with_where(session):
     )
 
     translator = eql_to_sql(query, session)
+    """
+    The expected SQL cannot be built as a SQLAlchemy select() object here
+    because KRROODPoseDAO has multiple FK relationships (position_id and
+    orientation_id), causing AmbiguousForeignKeysError when joining without
+    explicit aliases. The translator uses internal aliases that cannot be
+    replicated externally.
+    """
+
     expected_sql = (
         'SELECT "KRROODPositionDAO_1".x, "KRROODPositionDAO_1".y, '
         '"KRROODPositionDAO_1".z \n'
@@ -1088,19 +1113,11 @@ def test_set_of_transitive_evaluate(session, database):
 def test_big_query_select_part(session):
     """
     Simulate the SELECT part of the big plan query using existing test classes.
-
-    Simulates:
-    SELECT pu.arm, v_pick.x, v_pick.y, v_place.x, v_place.y, v_end.z
-    FROM PickUpActionDAO pu
-    JOIN NavigateActionDAO np ON np.database_id = pa.pick_nav_id
-    JOIN NavigateActionDAO np2 ON np2.database_id = pa.place_nav_id
-    JOIN PoseMappingDAO pm_end ON ...
-    JOIN Vector3MappingDAO v_end ON ...
-    WHERE v_end.z < 0.9
-    ORDER BY pa.plan_id
-
-    Using MoveAction (simulates PickUp/Navigate) and GraspConfig (simulates Pose/Vector3).
+    Simulates: SELECT robot_x, robot_y, rotate_gripper FROM ...
+               WHERE rotate_gripper < 0.9 ORDER BY robot_x
     """
+    from sqlalchemy.orm import aliased
+
     move_pick = variable(type_=MoveAction, domain=[])
     move_place = variable(type_=MoveAction, domain=[])
 
@@ -1118,24 +1135,26 @@ def test_big_query_select_part(session):
     )
 
     translator = eql_to_sql(query, session)
-    expected_sql = (
-        'SELECT "MoveActionDAO".robot_x, "MoveActionDAO".robot_y, '
-        '"MoveActionDAO".robot_x AS robot_x__1, '
-        '"MoveActionDAO".robot_y AS robot_y__1, '
-        '"GraspConfigDAO_1".rotate_gripper, '
-        '"GraspConfigDAO_1".approach_direction \n'
-        'FROM "SymbolDAO" JOIN "WorldEntityDAO" ON "WorldEntityDAO".database_id = '
-        '"SymbolDAO".database_id JOIN "MoveActionDAO" ON '
-        '"MoveActionDAO".database_id = "WorldEntityDAO".database_id JOIN '
-        '("SymbolDAO" AS "SymbolDAO_1" JOIN "WorldEntityDAO" AS '
-        '"WorldEntityDAO_1" ON "WorldEntityDAO_1".database_id = '
-        '"SymbolDAO_1".database_id JOIN "GraspConfigDAO" AS "GraspConfigDAO_1" '
-        'ON "GraspConfigDAO_1".database_id = "WorldEntityDAO_1".database_id) ON '
-        '"GraspConfigDAO_1".database_id = "MoveActionDAO".grasp_config_id \n'
-        'WHERE "GraspConfigDAO_1".rotate_gripper < :rotate_gripper_1 '
-        'ORDER BY "MoveActionDAO".robot_x'
+
+    grasp_alias = aliased(GraspConfigDAO, flat=True)
+
+    expected = (
+        select(
+            MoveActionDAO.robot_x,
+            MoveActionDAO.robot_y,
+            MoveActionDAO.robot_x,
+            MoveActionDAO.robot_y,
+            grasp_alias.rotate_gripper,
+            grasp_alias.approach_direction,
+        )
+        .join(grasp_alias,
+              onclause=grasp_alias.database_id == MoveActionDAO.grasp_config_id)
+        .where(grasp_alias.rotate_gripper < 0.9)
+        .order_by(MoveActionDAO.robot_x)
     )
-    assert str(translator.sql_query) == expected_sql
+
+    assert str(translator.sql_query) == str(expected)
+
 
 
 def test_cte_from_eql(session, database):
@@ -1203,6 +1222,13 @@ def test_case_when_with_min(session):
     ))
 
     translator = eql_to_sql(query, session)
+    """
+    The expected SQL cannot be built as a SQLAlchemy select() object here
+    because using SymbolDAO.polymorphic_type and MoveActionDAO.database_id
+    directly in func.min(case(...)) causes SQLAlchemy to generate additional
+    internal aliases (SymbolDAO_1, MoveActionDAO_1) that do not match the
+    translator output.
+    """
     expected_sql = (
         'SELECT min(CASE WHEN ("SymbolDAO".polymorphic_type = :polymorphic_type_1) '
         'THEN "MoveActionDAO".database_id END) AS min_1 \n'
@@ -1211,6 +1237,8 @@ def test_case_when_with_min(session):
         '"MoveActionDAO".database_id = "WorldEntityDAO".database_id'
     )
     assert str(translator.sql_query) == expected_sql
+
+
 
 
 def test_case_when_direct_in_set_of(session, database):
@@ -1250,7 +1278,10 @@ def test_case_when_with_max(session):
         max(case_when(action.polymorphic_type == 'PlaceActionDAO', action.database_id))
     ))
     translator = eql_to_sql(query, session)
-
+    """
+    Same reason as test_case_when_with_min — SQLAlchemy generates internal
+    aliases when using DAO columns directly in func.max(case(...)).
+    """
     expected_sql = (
         'SELECT max(CASE WHEN ("SymbolDAO".polymorphic_type = :polymorphic_type_1) '
         'THEN "MoveActionDAO".database_id END) AS max_1 \n'
