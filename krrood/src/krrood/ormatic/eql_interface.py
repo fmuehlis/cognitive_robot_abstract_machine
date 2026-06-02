@@ -23,8 +23,9 @@ from krrood.entity_query_language.core.mapped_variable import Attribute
 from krrood.entity_query_language.operators.comparator import Comparator
 from krrood.entity_query_language.operators.aggregators import Aggregator, CountAll, Count, Max, Min, Sum, Average
 
-from krrood.entity_query_language.factories import CaseWhen
+from krrood.entity_query_language.operators.conditionals import CaseWhen
 from krrood.ormatic.data_access_objects.helper import get_dao_class
+from krrood.ormatic.exceptions import NoDAOFoundError
 
 
 class EQLTranslationError(Exception):
@@ -46,9 +47,6 @@ class UnsupportedQuantifierError(EQLTranslationError):
 class AttributeResolutionError(EQLTranslationError):
     """Raised when an attribute cannot be resolved."""
 
-
-class MissingDAOError(EQLTranslationError):
-    """Raised when a DAO class cannot be found for a type."""
 
 
 class DomainExtractionError(EQLTranslationError):
@@ -401,7 +399,7 @@ class EQLTranslator:
         """Translate the EQL query to SQL."""
         dao_class = get_dao_class(self.select_like.selected_variable._type_)
         if dao_class is None:
-            raise MissingDAOError(
+            raise NoDAOFoundError(
                 f"No DAO class found for {self.select_like.selected_variable._type_}"
             )
 
@@ -441,7 +439,7 @@ class EQLTranslator:
             for var in selected:
                 dao_class = get_dao_class(var._type_)
                 if dao_class is None:
-                    raise MissingDAOError(
+                    raise NoDAOFoundError(
                         f"No DAO class found for {var._type_}"
                     )
                 dao_classes.append(dao_class)
@@ -455,7 +453,7 @@ class EQLTranslator:
                     break
 
             if base_dao is None:
-                raise MissingDAOError("No DAO class found for selected expressions")
+                raise NoDAOFoundError("No DAO class found for selected expressions")
 
             self.sql_query = select(base_dao)
             columns = [self._translate_comparator_operand(var) for var in selected]
@@ -812,7 +810,7 @@ class EQLTranslator:
             # The DAO class of the variable being selected (the "main" table in the query)
             selected_dao = get_dao_class(self.select_like.selected_variable._type_)
             if selected_dao is None:
-                raise MissingDAOError("Selected variable has no DAO class")
+                raise NoDAOFoundError("Selected variable has no DAO class")
             if left_dao is selected_dao:
                 target_dao, target_foreign_key, source_foreign_key = right_dao, right_foreign_key, left_foreign_key
             else:
@@ -939,7 +937,7 @@ class EQLTranslator:
 
         current_dao = get_dao_class(base_class)
         if current_dao is None:
-            raise MissingDAOError(f"No DAO class found for {base_class}.")
+            raise NoDAOFoundError(f"No DAO class found for {base_class}.")
 
         return self._walk_attribute_chain(current_dao, attribute_names)
 
