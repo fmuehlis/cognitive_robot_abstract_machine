@@ -31,7 +31,9 @@ _evaluation_context_var: ContextVar[Optional[EvaluationContext]] = ContextVar(
 
 
 def get_evaluation_context() -> Optional[EvaluationContext]:
-    """Return the current evaluation context, or None if outside evaluation."""
+    """
+    :return: The current :class:`EvaluationContext`, or ``None`` if called outside an active evaluation.
+    """
     return _evaluation_context_var.get()
 
 
@@ -143,10 +145,15 @@ class EvaluationContext:
 
 
 def is_condition_participant(expr: SymbolicExpression) -> bool:
-    """Return ``True`` if the expression participates in condition evaluation.
+    """
+    Check whether the expression participates in condition evaluation.
 
     :param expr: The symbolic expression to test.
-    :return: ``True`` if *expr* is a condition or a direct child of a truth-value operator.
+    :return: ``True`` if *expr* is a :class:`~krrood.entity_query_language.operators.comparator.Comparator`,
+        :class:`~krrood.entity_query_language.predicate.Predicate`, or
+        :class:`~krrood.entity_query_language.operators.core_logical_operators.LogicalOperator`,
+        or if its direct parent is a
+        :class:`~krrood.entity_query_language.core.base_expressions.TruthValueOperator`.
     """
     from krrood.entity_query_language.operators.comparator import Comparator
     from krrood.entity_query_language.predicate import Predicate
@@ -307,7 +314,7 @@ class InferenceRecorder(EvaluationObserver):
         if expression._id_ not in result.bindings:
             return
         # Only record for InstantiatedVariable subclasses whose _evaluate__
-        # delegates to _instantiate_using_child_vars_and_yield_results_ (i.e.
+        # delegates to _instantiate_using_child_vars_and_yield_results_ (that is,
         # those that actually create new instances).  Query and its subclasses
         # (Entity, SetOf) override _evaluate__ and merely remap bindings
         # without creating new inferred instances.

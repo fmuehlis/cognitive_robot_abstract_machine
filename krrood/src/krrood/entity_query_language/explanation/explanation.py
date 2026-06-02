@@ -82,7 +82,8 @@ def _build_type_existence_condition(
 
 
 def _is_krrood_internal_frame(frame: StackFrame) -> bool:
-    """Return ``True`` if *frame* belongs to the krrood package internals.
+    """
+    Check whether *frame* belongs to the krrood package internals.
 
     :param frame: The stack frame to test.
     :return: ``True`` when the frame originates from within the krrood package.
@@ -98,7 +99,12 @@ def _is_krrood_internal_frame(frame: StackFrame) -> bool:
 
 
 def _get_query_source(frame: StackFrame) -> Optional[str]:
-    """Return the full source statement at frame.lineno, or frame.code_snippet as fallback."""
+    """
+    Extract the full source statement that contains ``frame.lineno``.
+
+    :param frame: The stack frame whose source to extract.
+    :return: The full source statement at ``frame.lineno``, or ``frame.code_snippet`` as a fallback.
+    """
     if not frame or not frame.filename:
         return None
     lines = linecache.getlines(frame.filename)
@@ -206,7 +212,10 @@ class InferenceExplanation(Symbol):
 
     def get_satisfied_conditions_as_string(self) -> str:
         """
-        Returns a string representation of the satisfied conditions, joined by ' AND '.
+        Render all satisfied conditions as a single string, with each condition separated by ' AND '.
+
+        :return: A string containing all satisfied conditions joined by ``\\nAND ``,
+            or an empty string when no conditions were satisfied.
         """
         return "\nAND ".join(
             str(c) for c in self.get_satisfied_conditions_and_their_bindings()
@@ -214,10 +223,12 @@ class InferenceExplanation(Symbol):
 
     def get_satisfied_conditions_and_their_bindings(self) -> List[ConditionAndBindings]:
         """
-        Retrieve the list of satisfied condition expressions along with their bindings.
+        Retrieve the list of satisfied non-logical condition expressions along with their bindings.
 
-        :return: A list of :class:`ConditionAndBindings` objects, each containing a satisfied condition expression and
-        its corresponding bindings. Returns an empty list if no satisfaction data is available.
+        :return: A list of :class:`ConditionAndBindings` objects, each pairing a satisfied
+            condition expression (excluding :class:`~krrood.entity_query_language.operators.core_logical_operators.LogicalOperator`
+            wrappers) with the full variable bindings from the evaluation. An empty list is
+            returned when no satisfaction data is available.
         """
         if (
             self.operation_result is None
@@ -267,7 +278,7 @@ class InferenceExplanation(Symbol):
         """
         filtered_frames = self.stack.filter().frames
 
-        # Prefer frames from real source files (skip synthetic "<string>", "<frozen ...>", etc.)
+        # Prefer frames from real source files (skip synthetic "<string>", "<frozen ...>", and similar)
         real_user_frames = [
             frame
             for frame in filtered_frames
@@ -342,33 +353,38 @@ class InferenceExplanation(Symbol):
 
     def is_triggered_from_method(self) -> bool:
         """
-        Return ``True`` if any frame in the call stack is inside a class method
-        or classmethod (i.e. at least one frame has a non-``None`` ``class_object``).
+        Check whether any frame in the call stack is inside a class method or classmethod.
+
+        :return: ``True`` if at least one frame has a non-``None`` ``class_object``, ``False`` otherwise.
         """
         return self.stack.is_from_method()
 
     def triggering_classes(self) -> List[type]:
         """
-        Return the distinct class objects that appear in the call stack,
+        Retrieve the distinct class objects that appear in the call stack,
         in order of first occurrence (innermost first).
 
         Useful for answering "from which class was this inference triggered?"
+
+        :return: A list of class objects appearing in the stack, deduplicated and in innermost-first order.
         """
         return self.stack.classes()
 
     def triggering_functions(self) -> List[Callable]:
         """
-        Return the distinct function objects that appear in the call stack,
+        Retrieve the distinct function objects that appear in the call stack,
         in order of first occurrence (innermost first).
 
-        Note: nested functions defined inside other functions may not be
-        resolvable and will be absent from this list.
+        Nested functions defined inside other functions may not be resolvable
+        and will be absent from this list.
+
+        :return: A list of callable objects appearing in the stack, deduplicated and in innermost-first order.
         """
         return self.stack.functions()
 
     def root_frame_in(self, package: str) -> Optional[StackFrame]:
         """
-        Return the outermost :class:`~krrood.entity_query_language._stack.StackFrame`
+        Find the outermost :class:`~krrood.entity_query_language._stack.StackFrame`
         whose ``module_name`` contains *package*.
 
         This identifies the highest-level entry point into *package* that

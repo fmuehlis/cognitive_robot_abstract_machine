@@ -65,7 +65,9 @@ class MonitoredRegistry:
 
     @property
     def monitored_classes(self) -> tuple[type, ...]:
-        """Return an immutable snapshot of all monitored classes."""
+        """
+        :return: An immutable snapshot of all currently monitored classes as a tuple.
+        """
         return tuple(self._monitored)
 
 

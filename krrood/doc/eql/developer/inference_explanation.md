@@ -13,229 +13,264 @@ kernelspec:
 
 # Inference Explanation Internals
 
+## Goals and Constraints
+
+The Inference Explanation subsystem answers the question "how was this object created?" for any
+instance produced by an EQL `inference(...)` rule. The design is governed by four constraints:
+
+1. **No global registry** — storing explanations in a class-level mapping (for example, a
+   `WeakKeyDictionary`) creates hard-to-diagnose memory leaks and couples explanation lifetime
+   to a global object rather than to the instance. The design must make the explanation's
+   lifecycle identical to the instance's lifecycle.
+
+2. **Non-invasive instrumentation** — the core evaluation logic in `base_expressions.py` must
+   not be modified to add explanation-specific code. New concerns (tracking, recording) must be
+   injectable as separate components.
+
+3. **Queryable metadata** — an explanation must be a first-class entity that can be filtered,
+   joined, and composed using EQL itself, so that downstream consumers (planners, debuggers) can
+   extract structured information without string parsing.
+
+4. **Safe call-stack capture** — Python `inspect.FrameInfo` objects hold a live reference to
+   their frame, which in turn holds all local variables. Capturing a raw `FrameInfo` list
+   prevents those local variables from being collected. The capture mechanism must eagerly
+   extract all needed data and immediately release the frame reference.
+
 ## Architecture Overview
 
-The `InferenceExplanation` machinery sits at the end of the EQL evaluation pipeline:
+The subsystem is built from four collaborating layers:
 
 ```
-EQL evaluation pipeline
-        │
-        ▼
-EvaluationContext  ──observers──►  SatisfiedConditionTracker
-                                   EvaluationTracker
-                                   InferenceRecorder
-                                           │
-                                           ▼ on_result_yielded
-                                   register_inference(instance, variable_node, result)
-                                           │
-                                           ▼
-                              instance._inference_explanation_ = InferenceExplanation(...)
+┌─────────────────────────────────────────────────────────────────────┐
+│  LAYER 1: Call-stack capture (krrood/entity_query_language/_stack.py,  │
+│                               krrood/entity_query_language/_monitoring.py) │
+│                                                                     │
+│  @monitored decorator patches __post_init__ to capture a CallStack  │
+│  of StackFrame objects as each monitored InstantiatedVariable is    │
+│  created. StackFrame eagerly extracts all data from the live frame. │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │ _creation_stack stored on variable instance
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  LAYER 2: Evaluation observer pipeline                              │
+│  (krrood/entity_query_language/evaluation.py)                       │
+│                                                                     │
+│  EvaluationContext  ──observers──► EvaluationTracker               │
+│                                    SatisfiedConditionTracker        │
+│                                    InferenceRecorder                │
+│                                              │                      │
+│                                              ▼ on_result_yielded    │
+│                               register_inference(instance, node, result) │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │ explanation attached to instance
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  LAYER 3: Explanation storage                                       │
+│  (krrood/symbol_graph/symbol_graph.py)                              │
+│                                                                     │
+│  Symbol._inference_explanation_: Optional[InferenceExplanation]    │
+│  Declared init=False; set by register_inference after construction. │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │ callers query the explanation
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  LAYER 4: Explanation API                                           │
+│  (krrood/entity_query_language/explanation/explanation.py)          │
+│                                                                     │
+│  InferenceExplanation(Symbol): meta-query methods, stack methods,  │
+│  condition_graph(), as_string()                                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-## EvaluationObservers
+## Layer 1 — Call-Stack Provenance
 
-The evaluation pipeline in `SymbolicExpression._evaluate_` notifies an `EvaluationContext` at
-four points:
+### Design: eager extraction via `StackFrame.from_frame_info`
 
-| Hook | Purpose |
-|---|---|
-| `on_evaluate_enter` | Record which expressions have been entered (→ `EVALUATED_IDS_KEY`) |
-| `on_result_yielded` | Stamp satisfied/evaluated IDs onto each `OperationResult` |
-| `on_conclusions_processed` | At the conditions root: walk the truth map and build the final `satisfied_condition_ids` |
-| `on_evaluate_exit` | No-op by default (available for custom observers) |
+`StackFrame` (`krrood/src/krrood/entity_query_language/_stack.py`) is an immutable data class
+that eagerly extracts everything needed from a live `inspect.FrameInfo` at construction time
+and immediately drops the frame reference. This satisfies constraint 4: no live frame objects
+are retained, so all frame-local variables can be collected normally.
 
-Three built-in observers are assembled into the default context:
+`CallStack` is an ordered sequence of `StackFrame` objects, innermost frame first. Its
+`filter(package=...)` method returns a new stack with external library frames removed, keeping
+only frames that belong to user code or a specified package.
 
-- **`EvaluationTracker`** — accumulates `EVALUATED_IDS_KEY` as the tree is traversed; stamps
-  the cumulative set on every yielded `OperationResult`.
-- **`SatisfiedConditionTracker`** — propagates `satisfied_condition_ids` forward through the
-  result chain; at the conditions root, builds the final set by consulting the chain's truth map.
-- **`InferenceRecorder`** — on `on_result_yielded`, calls `register_inference` for every
-  `InstantiatedVariable` that produced a binding.
+### Design: `MonitoredRegistry` — a class decorator that hooks `__post_init__`
 
-### `create_default_evaluation_context` — The Extension Point
+`MonitoredRegistry` (`krrood/src/krrood/entity_query_language/_monitoring.py`) is a singleton
+registry that doubles as a class decorator. Applying `@monitored` to a dataclass class patches
+its `__post_init__` method to capture a `CallStack` immediately after the dataclass constructor
+runs, storing it as `self._creation_stack`. The original `__post_init__` is preserved and
+called after the stack is recorded.
 
-The observer list is not hardcoded inside the core evaluation method. Instead,
-`create_default_evaluation_context()` (in `krrood/src/krrood/entity_query_language/evaluation.py`)
-is the single factory responsible for constructing the `EvaluationContext` used during normal
-query evaluation:
+This design satisfies constraint 2: the classes being monitored (`InstantiatedVariable` and its
+subclasses) do not need to know about the monitoring infrastructure. The decorator injects the
+capture behaviour from outside.
 
-```python
-def create_default_evaluation_context() -> EvaluationContext:
-    return EvaluationContext(
-        observers=[
-            EvaluationTracker(),
-            SatisfiedConditionTracker(),
-            InferenceRecorder(),
-        ]
-    )
-```
+The singleton instance `monitored` (defined at module level in `_monitoring.py`) is imported
+wherever decoration or lookup is needed. Isolation is maintained by keeping `_monitoring.py`
+free of intra-package EQL imports, which breaks what would otherwise be a circular import
+between `variable.py` and `explanation.py`.
 
-`SymbolicExpression._evaluate_` calls this factory when no context is already active. This means
-adding a new built-in observer requires only a change to `create_default_evaluation_context` —
-no edits to the core evaluation logic in `base_expressions.py` are needed.
+## Layer 2 — The Evaluation Observer Pipeline
 
-To add a custom observer for a one-off evaluation pass without affecting global behaviour,
-construct an `EvaluationContext` directly and install it with `set_evaluation_context`:
+### Hook points in `_evaluate_`
+
+`SymbolicExpression._evaluate_` (`krrood/src/krrood/entity_query_language/core/base_expressions.py`)
+is the single wrapper that manages the evaluation context lifecycle and notifies observers. It
+calls four hooks:
+
+| Hook | When | Purpose |
+|---|---|---|
+| `on_evaluate_enter` | Before evaluating an expression | Record that this expression was entered |
+| `on_result_yielded` | For each `OperationResult` yielded | Stamp IDs onto the result and record inferences |
+| `on_conclusions_processed` | At the conditions root after all conditions | Build the final `satisfied_condition_ids` set |
+| `on_evaluate_exit` | After all results have been yielded | Available for custom cleanup |
+
+### The three built-in observers
+
+**`EvaluationTracker`** accumulates a running set of expression IDs (stored in the context's
+`data` dict under `EVALUATED_IDS_KEY`) as the tree is traversed. On `on_result_yielded` it
+snapshots the current set onto each `OperationResult` as `evaluated_expression_ids`. This set
+is what allows `SatisfiedConditionTracker` to distinguish expressions that were short-circuited
+(and therefore absent from the chain truth map) from expressions that genuinely evaluated to
+`False`.
+
+**`SatisfiedConditionTracker`** waits until the conditions root fires `on_conclusions_processed`,
+then walks the `OperationResult` chain to build a `chain_truth_map` (expression ID to `is_false`
+flag). It iterates over every expression ID in `evaluated_expression_ids` and classifies each
+condition participant as satisfied or not. `LogicalOperator` nodes not present in the chain
+truth map were short-circuited. The final `OrderedSet` is written back to
+`result.satisfied_condition_ids`.
+
+**`InferenceRecorder`** listens on `on_result_yielded`. When the expression is an
+`InstantiatedVariable` (but not a `Query` or its subclasses, which only remap bindings without
+creating new instances) and the expression ID appears in the result's bindings, it calls
+`register_inference` to attach an `InferenceExplanation` to the newly created instance.
+
+### `create_default_evaluation_context` — the single extension point
+
+The observer list is not hard-coded inside `_evaluate_`. Instead,
+`create_default_evaluation_context()` is the authoritative factory that assembles the three
+built-in observers into an `EvaluationContext`. `_evaluate_` calls this factory only when no
+context is already active (the `contextvars.ContextVar` is `None`).
+
+Adding a new built-in observer requires only a change to `create_default_evaluation_context`.
+Injecting a custom observer for a single evaluation pass (without affecting global behaviour)
+requires constructing an `EvaluationContext` directly and installing it via
+`set_evaluation_context`, which returns a `contextvars.Token` for safe reset.
 
 ```python
 from krrood.entity_query_language.evaluation import (
     EvaluationContext,
     EvaluationObserver,
     set_evaluation_context,
+    _evaluation_context_var,
 )
+
 
 class MyObserver(EvaluationObserver):
     def on_result_yielded(self, expression, result):
         # custom logic here
         ...
 
+
 custom_context = EvaluationContext(observers=[MyObserver()])
 token = set_evaluation_context(custom_context)
 try:
     results = my_query.tolist()
 finally:
-    from krrood.entity_query_language.evaluation import _evaluation_context_var
     _evaluation_context_var.reset(token)
 ```
 
-`set_evaluation_context` returns a `contextvars.Token`. Pass that token to
-`_evaluation_context_var.reset(token)` to restore the previous context — exactly the pattern
-`_evaluate_` itself uses internally.
+The `contextvars.ContextVar` is thread- and async-safe by construction: each thread or
+coroutine gets its own independent copy of the variable, so concurrent evaluations do not
+interfere with each other.
 
-### `EvaluationContextKey` Compatibility
+## Layer 3 — Explanation Storage on `Symbol`
 
-`EvaluationContextKey` is defined as `class EvaluationContextKey(str, Enum)` (in
-`krrood/src/krrood/entity_query_language/enums.py`). The `str, Enum` pattern is used rather than
-`StrEnum` (which was introduced in Python 3.11) to keep the package compatible with Python 3.10.
+### Why `InferenceExplanation` inherits from `Symbol`
 
-## Why `InferenceExplanation` Inherits from `Symbol`
+Inheriting from `Symbol` makes every explanation a first-class entity in the `SymbolGraph`.
+This satisfies constraint 3: explanations are queryable via EQL using the same meta-query
+methods that operate on any other domain object. Clearing the `SymbolGraph` in tests also
+clears all explanations automatically, because explanations are registered in the graph like
+any other `Symbol`.
 
-This was a deliberate design choice driven by four principles:
+### Why `_inference_explanation_` is declared on `Symbol` with `init=False`
 
-1. **No global registry** — the explanation is stored on the inferred instance
-   (`instance._inference_explanation_`). Its lifecycle is identical to the instance's lifecycle;
-   when the instance is GC'd, the explanation is too. This satisfies the *Object Ownership / RAII*
-   principle.
+The field is declared directly on the `Symbol` base class so that no protocol, mixin, or
+interface is needed — every inferred object is already a `Symbol`. The `init=False` flag
+ensures the field is never visible as a constructor parameter in any subclass; callers cannot
+accidentally set it. The field is excluded from `__repr__` and `__eq__` to avoid polluting
+equality semantics and string output.
 
-2. **Lifecycle management stays together** — inheriting from `Symbol` means explanations are registered in the
-   `SymbolGraph` and managed with the rest of object instances. Clearing the `SymbolGraph` clears all instance-related knowledge.
+The runtime import of `InferenceExplanation` inside `symbol_graph.py` is guarded by
+`TYPE_CHECKING` to prevent a circular import: `symbol_graph.py` is a dependency of
+`explanation.py`, so a regular top-level import would create a cycle.
 
-3. **Tell Don't Ask** — callers ask the object for its own metadata
-   (`explain_inference(instance)` → `instance._inference_explanation_`) rather than querying an
-   external registry.
+### Weakref back-reference prevents a reference cycle
 
-4. **Avoiding the `WeakKeyDictionary` anti-pattern** — the previous design stored explanations
-   in `INFERENCE_RECORD: WeakKeyDictionary[instance → explanation]`. Because
-   `explanation.instance` held a strong reference back to the key, the keys could never be
-   collected. Removing the global registry and storing a `weakref` from the explanation back to
-   its instance breaks the cycle.
-
-## Why `_inference_explanation_` is a Field on `Symbol`
-
-The `Symbol` base class declares:
-
-```python
-_inference_explanation_: Optional[InferenceExplanation] = field(
-    default=None, init=False, repr=False, compare=False
-)
-```
-
-Using `init=False` ensures the field is never a constructor parameter in any `Symbol` subclass —
-it remains invisible to callers. It is set later by `register_inference` via normal attribute
-assignment.
-
-The field lives on `Symbol` (not on a separate mixin or on `InferenceExplanation` itself)
-because:
-- Every inferred object is a `Symbol`; no extra protocol or interface is needed.
-- The field is excluded from `__repr__` and `__eq__` to avoid polluting equality semantics and
-  string output.
-- Runtime import of `InferenceExplanation` is guarded by `TYPE_CHECKING` to prevent a circular
-  import between `symbol_graph.py` and `explanation.py`.
-
-## The Weakref Back-Reference
-
-`InferenceExplanation` stores the inferred instance as a `weakref.ref`:
-
-```python
-_instance_ref: Optional[weakref.ref] = field(
-    default=None, init=False, repr=False, compare=False
-)
-```
-
-This prevents a strong reference cycle:
+`InferenceExplanation` stores a `weakref.ref` back to its instance rather than a strong
+reference. Without this, the ownership chain would create a cycle:
 
 ```
-instance  ──strong──►  InferenceExplanation  ──weak──►  (back to instance)
+instance  ──strong──►  InferenceExplanation  ──strong──►  (back to instance)
 ```
 
-If `_instance_ref` were a strong reference, `instance` and `InferenceExplanation` would form a
-cycle that prevents both from being collected even when no external code holds either.
+Both objects would keep each other alive indefinitely even when no external code holds either.
+The `weakref` breaks the cycle: only the instance holds a strong reference to its explanation;
+the explanation can be collected along with the instance when the instance's reference count
+drops to zero.
 
-## Memory Management: The `lru_cache` Pitfall
+## Layer 4 — Memory Management: Avoiding the `lru_cache` Pitfall
 
-A `@lru_cache` applied to an instance method is a **class-level** cache. Its keys contain
-`self`, so every expression object that has ever been looked up is kept strongly referenced by
-the cache — indefinitely, because the class itself is never collected.
+`SymbolicExpression._get_expression_by_id_` is called by meta-query methods to look up a
+symbolic expression by its UUID. A `@lru_cache` on an instance method is a class-level cache
+whose keys contain `self`. This means every expression object ever looked up is kept strongly
+referenced by the cache for the lifetime of the class — a memory leak that, in EQL, chains
+through `Variable` instances (which hold their entire domain in memory) all the way up to the
+`World` object.
 
-`SymbolicExpression._get_expression_by_id_` was originally decorated with `@lru_cache`. Because
-EQL `Variable` instances store their domain data (e.g. `world.bodies`) in
-`_re_enterable_domain_generator_.materialized_values`, keeping a `Variable` alive keeps the
-entire domain (and through the `world` back-reference on each entity, the `World` object) alive.
+The fix is a per-instance dict stored in `self.__dict__` under a private key. The cache is
+allocated on demand the first time it is needed and is collected along with the expression
+object when that object's reference count drops to zero. No external root is created.
 
-The fix is to use a **per-instance dict** stored in `self.__dict__`:
+## Benefits and Drawbacks
 
-```python
-def _get_expression_by_id_(self, id_: uuid.UUID) -> SymbolicExpression:
-    cache: dict = self.__dict__.setdefault('_expression_id_cache_', {})
-    if id_ not in cache:
-        try:
-            cache[id_] = next(...)
-        except StopIteration:
-            raise NoExpressionFoundForGivenID(self, id_)
-    return cache[id_]
-```
+**Benefits**
 
-When the expression object is GC'd, `__dict__` (and the embedded cache) is collected with it.
-No external root is created.
+- Explanations are first-class EQL entities. All meta-query methods (`get_satisfied_condition_expressions_for_the_instance`, `get_conditions_that_relate_variables_of_types`, and so on) are themselves EQL queries, which means they compose with other EQL queries naturally.
+- The observer pipeline is closed to modification but open to extension: new built-in observers require only a change to `create_default_evaluation_context`; one-off custom observers require no changes to any existing code.
+- Memory safety is explicit and architectural: weak references, `init=False` fields, per-instance caches, and eager frame extraction all prevent leaks at the design level rather than relying on programmer discipline.
+- Thread and async safety comes for free from `contextvars.ContextVar`.
 
-## Module-Level Helpers in `explanation.py`
+**Drawbacks**
 
-### `_build_type_existence_condition`
+- The `SatisfiedConditionTracker.on_conclusions_processed` method must walk the full `OperationResult` chain to reconstruct the truth map. This is linear in the number of conditions, which is acceptable for typical query sizes but could become measurable for very large condition trees.
+- The `@monitored` decorator patches `__post_init__`, which means it must be applied only to dataclasses. Applying it to a regular class (without `__post_init__`) is silently accepted but produces an empty `_creation_stack` on construction.
+- Eager frame extraction captures the stack at query-definition time, not at query-evaluation time. For queries defined at module import time and evaluated much later, the call stack may not point to the most relevant user code.
 
-`_build_type_existence_condition(node_variable, type_)` (in
-`krrood/src/krrood/entity_query_language/explanation/explanation.py`) builds an `exists()`
-expression that checks whether `node_variable` (or one of its descendants) has a `_type_` that
-is a subclass of the given `type_`. Both
-`get_conditions_that_relate_the_variables_of_type` and
-`get_conditions_that_relate_variables_of_types` use this helper, so the subclass-membership
-check is defined in exactly one place.
+## Extension Guide
 
-### `_is_krrood_internal_frame`
+To add a new built-in observer (one that participates in every EQL evaluation):
 
-`_is_krrood_internal_frame(frame)` (in
-`krrood/src/krrood/entity_query_language/explanation/explanation.py`) returns `True` when a
-`StackFrame` originates from within the `krrood` package. Being a module-level function makes it
-independently testable and reusable by any future helper that needs to filter internal frames
-from a call stack.
+1. Subclass `EvaluationObserver` and implement whichever hook methods you need.
+2. Add an instance of your observer to the list returned by `create_default_evaluation_context` in `krrood/src/krrood/entity_query_language/evaluation.py`.
 
-## `is_condition_participant` in `evaluation.py`
+To add a one-off custom observer without touching global behaviour:
 
-`is_condition_participant(expr: SymbolicExpression) -> bool` (in
-`krrood/src/krrood/entity_query_language/evaluation.py`) returns `True` when `expr` participates
-in condition evaluation — that is, when `expr` is a `Comparator`, `Predicate`, or
-`LogicalOperator`, or when its direct parent is a `TruthValueOperator`. The function guards
-against a `None` parent before the `isinstance` check, so it is safe to call on root
-expressions that have no parent. The explicit `expr: SymbolicExpression` type annotation makes
-the expected argument clear at call sites in `query_graph.py`.
+1. Subclass `EvaluationObserver`.
+2. Construct an `EvaluationContext` with your observer, install it via `set_evaluation_context`, and reset the context via the returned token after the evaluation completes.
 
-## `_UNSATISFIED_BORDER_COLOR` in `query_graph.py`
+To extend `InferenceExplanation` with a new meta-query method:
 
-`_UNSATISFIED_BORDER_COLOR: str = "red"` (in
-`krrood/src/krrood/entity_query_language/query_graph.py`) names the border colour applied to
-faded, unsatisfied query-graph nodes. Having a named constant rather than an inline string
-literal means the colour can be changed in one place and the intent of the value is
-self-documenting.
+1. Add the method to `InferenceExplanation` in `krrood/src/krrood/entity_query_language/explanation/explanation.py`.
+2. Build the query body using `create_explanation_variable()` and `create_query_node_variable()` as the starting points; these provide the explanation and its query-node variable, from which any traversal of the expression tree can be built.
+
+To monitor a new class (so its creation stack is captured):
+
+1. Apply the `@monitored` decorator to the class. The class must be a dataclass (or otherwise have a `__post_init__` method).
 
 ## API Reference
 - {py:class}`~krrood.entity_query_language.explanation.explanation.InferenceExplanation`
@@ -245,4 +280,11 @@ self-documenting.
 - {py:func}`~krrood.entity_query_language.evaluation.create_default_evaluation_context`
 - {py:class}`~krrood.entity_query_language.evaluation.EvaluationContext`
 - {py:class}`~krrood.entity_query_language.evaluation.EvaluationObserver`
-- {py:func}`~krrood.entity_query_language.evaluation.is_condition_participant`
+- {py:class}`~krrood.entity_query_language.evaluation.EvaluationTracker`
+- {py:class}`~krrood.entity_query_language.evaluation.SatisfiedConditionTracker`
+- {py:class}`~krrood.entity_query_language.evaluation.InferenceRecorder`
+- {py:func}`~krrood.entity_query_language.evaluation.set_evaluation_context`
+- {py:func}`~krrood.entity_query_language.evaluation.get_evaluation_context`
+- {py:class}`~krrood.entity_query_language._stack.CallStack`
+- {py:class}`~krrood.entity_query_language._stack.StackFrame`
+- {py:class}`~krrood.entity_query_language._monitoring.MonitoredRegistry`

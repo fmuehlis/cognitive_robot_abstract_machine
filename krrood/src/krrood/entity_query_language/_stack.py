@@ -18,16 +18,33 @@ class StackFrame:
     """A single frame in a captured call stack."""
 
     filename: str
+    """
+    Full path to the source file.
+    """
     lineno: int
+    """
+    Line number within the source file.
+    """
     function_name: str
+    """
+    Name of the function or method.
+    """
     code_snippet: Optional[str]
-    """One source line, stripped; ``None`` if unavailable."""
+    """
+    One source line, stripped; ``None`` if unavailable.
+    """
     class_object: Optional[type]
-    """The class that owns this method, or ``None`` for free functions."""
+    """
+    The class that owns this method, or ``None`` for free functions.
+    """
     function_object: Optional[Callable]
-    """The callable object for this frame, or ``None`` if not resolvable."""
+    """
+    The callable object for this frame, or ``None`` if not resolvable.
+    """
     module_name: Optional[str]
-    """Dotted module name (string, not ``ModuleType``) to avoid reference leaks."""
+    """
+    Dotted module name (string, not ``ModuleType``) to avoid reference leaks.
+    """
 
     @property
     def is_method(self) -> bool:
@@ -81,9 +98,10 @@ class CallStack:
 
     def filter(self, package: Optional[str] = None) -> CallStack:
         """
-        Return a new :class:`CallStack` with external-library frames removed.
+        Build a new :class:`CallStack` with external-library frames removed.
 
-        :param package: If given, keep only frames whose filename contains this string.
+        :param package: When provided, keep only frames whose filename contains this string.
+        :return: A new :class:`CallStack` containing only the retained frames.
         """
         kept = []
         for frame in self.frames:
@@ -96,12 +114,12 @@ class CallStack:
 
     def root_frame_in(self, package: str) -> Optional[StackFrame]:
         """
-        Return the outermost frame (highest in the call hierarchy) whose
+        Find the outermost frame (highest in the call hierarchy) whose
         ``module_name`` contains *package*.  This is the entry point into the
         library from the caller's perspective.
 
         :param package: Substring to match against ``module_name``.
-        :return: The outermost matching :class:`StackFrame`, or ``None``.
+        :return: The outermost matching :class:`StackFrame`, or ``None`` if no frame matches.
         """
         matches = [
             frame
