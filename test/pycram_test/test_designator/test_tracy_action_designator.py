@@ -127,7 +127,7 @@ def test_reach_action_multi(immutable_tracy_block_world):
     grasp_description = GraspDescription(
         ApproachDirection.FRONT,
         VerticalAlignment.TOP,
-        left_arm.manipulator,
+        left_arm.end_effector,
     )
     box_body = world.get_body_by_name("box1")
 
@@ -149,7 +149,7 @@ def test_reach_action_multi(immutable_tracy_block_world):
     with simulated_robot:
         plan.perform()
 
-    manipulator_pose = left_arm.manipulator.tool_frame.global_transform
+    manipulator_pose = left_arm.end_effector.tool_frame.global_transform
     manipulator_position = manipulator_pose.to_position().to_np()
     manipulator_orientation = manipulator_pose.to_quaternion().to_np()
 
@@ -170,8 +170,8 @@ def test_move_gripper_multi(immutable_tracy_block_world):
         plan.perform()
 
     arm = view.all_arms[0]
-    open_state = arm.manipulator.get_joint_state_by_type(GripperState.OPEN)
-    close_state = arm.manipulator.get_joint_state_by_type(GripperState.CLOSE)
+    open_state = arm.end_effector.get_joint_state_by_type(GripperState.OPEN)
+    close_state = arm.end_effector.get_joint_state_by_type(GripperState.CLOSE)
 
     for connection, target in open_state.items():
         assert connection.position == pytest.approx(target, abs=0.01)
@@ -194,7 +194,7 @@ def test_grasping(immutable_tracy_block_world):
     grasp_description = GraspDescription(
         ApproachDirection.FRONT,
         VerticalAlignment.TOP,
-        left_arm.manipulator,
+        left_arm.end_effector,
     )
     description = GraspingAction(
         world.get_body_by_name("box1"), Arms.LEFT, grasp_description
@@ -218,7 +218,7 @@ def test_pick_up_tracy(mutable_tracy_block_world):
     grasp_description = GraspDescription(
         ApproachDirection.FRONT,
         VerticalAlignment.TOP,
-        left_arm.manipulator,
+        left_arm.end_effector,
     )
     plan = sequential(
         [
@@ -233,7 +233,7 @@ def test_pick_up_tracy(mutable_tracy_block_world):
 
     assert (
         world.get_connection(
-            left_arm.manipulator.tool_frame,
+            left_arm.end_effector.tool_frame,
             world.get_body_by_name("box1"),
         )
         is not None
@@ -249,7 +249,7 @@ def test_place_tracy(mutable_tracy_block_world):
     grasp_description = GraspDescription(
         ApproachDirection.FRONT,
         VerticalAlignment.TOP,
-        left_arm.manipulator,
+        left_arm.end_effector,
     )
 
     plan = sequential(
@@ -270,7 +270,7 @@ def test_place_tracy(mutable_tracy_block_world):
 
     with pytest.raises(NoEdgeBetweenNodes):
         world.get_connection(
-            left_arm.manipulator.tool_frame,
+            left_arm.end_effector.tool_frame,
             world.get_body_by_name("box1"),
         )
     box_body = world.get_body_by_name("box1")
@@ -301,7 +301,7 @@ def test_move_tcp_follows_sine_waypoints(immutable_tracy_block_world):
     with simulated_robot:
         plan.perform()
 
-    tip_pose = right_arm.manipulator.tool_frame.global_transform
+    tip_pose = right_arm.end_effector.tool_frame.global_transform
     expected = waypoints.poses[-1]
 
     assert np.allclose(tip_pose.to_position(), expected.to_position(), atol=0.01)

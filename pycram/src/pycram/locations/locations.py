@@ -485,7 +485,9 @@ class AccessingLocation(Location):
         :yield: A location designator containing the pose and the arms that can be used.
         """
         test_world = deepcopy(self.world)
-        test_robot = test_world.get_semantic_annotation_by_id(self.robot.id)
+        test_robot: AbstractRobot = test_world.get_semantic_annotation_by_id(
+            self.robot.id
+        )
 
         final_map = self.setup_costmaps(self.handle)
 
@@ -505,7 +507,7 @@ class AccessingLocation(Location):
             except RobotInCollision:
                 continue
 
-            for arm_chain in test_robot.arms:
+            for arm_chain in test_robot.all_arms:
                 grasp = GraspDescription(
                     ApproachDirection.FRONT,
                     VerticalAlignment.NoAlignment,
@@ -523,7 +525,11 @@ class AccessingLocation(Location):
                     arm_chain.end_effector.tool_frame,
                     test_robot,
                     test_world,
-                    use_fullbody_ik=test_robot.full_body_controlled,
+                    use_fullbody_ik=(
+                        test_robot.mobile_base.full_body_controlled
+                        if isinstance(test_robot, HasMobileBase)
+                        else False
+                    ),
                 )
                 if is_reachable:
                     yield pose_candidate

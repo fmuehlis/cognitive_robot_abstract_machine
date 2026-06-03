@@ -47,7 +47,7 @@ def test_underspecified_language(mutable_model_world):
     grasp_description = GraspDescription(
         ApproachDirection.FRONT,
         VerticalAlignment.NoAlignment,
-        robot.left_arm.manipulator,
+        robot.left_arm.end_effector,
     )
     plan_generator = underspecified(sequential, target_type=SequentialNode)(
         children=[

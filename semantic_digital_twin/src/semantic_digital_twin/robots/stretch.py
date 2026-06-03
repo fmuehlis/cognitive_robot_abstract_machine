@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from abc import ABC
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
 from typing import Self, Union, List
@@ -312,13 +312,13 @@ class StretchTorso(Torso, HasNeck[StretchNeck], HasOneArm[StretchArm]):
 
         torso_mid = JointState.from_mapping(
             name=PrefixedName("torso_mid", prefix=self.name.name),
-            mapping=dict(zip(torso_joint, [0.55])),
+            mapping=dict(zip(torso_joint, [0.5])),
             state_type=TorsoState.MID,
         )
 
         torso_high = JointState.from_mapping(
             name=PrefixedName("torso_high", prefix=self.name.name),
-            mapping=dict(zip(torso_joint, [1.1])),
+            mapping=dict(zip(torso_joint, [1])),
             state_type=TorsoState.HIGH,
         )
 
@@ -336,6 +336,9 @@ class StretchTorso(Torso, HasNeck[StretchNeck], HasOneArm[StretchArm]):
 
 @dataclass(eq=False)
 class StretchMobileBase(MobileBase, HasTorso[StretchTorso]):
+
+    full_body_controlled: bool = field(default=True, kw_only=True)
+    forward_axis: Vector3 = field(default_factory=Vector3.NEGATIVE_Y)
 
     def setup_hardware_interfaces(self):
         pass

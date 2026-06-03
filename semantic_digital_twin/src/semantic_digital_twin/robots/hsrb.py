@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from abc import ABC
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
 from typing import Self, Union, List
@@ -395,6 +395,8 @@ class HSRBTorso(Torso, HasOneArm[HSRBArm], HasNeck[HSRBNeck]):
 
 @dataclass(eq=False)
 class HSRBMobileBase(MobileBase, HasTorso[HSRBTorso]):
+
+    full_body_controlled: bool = field(default=True, kw_only=True)
 
     def setup_hardware_interfaces(self):
         pass

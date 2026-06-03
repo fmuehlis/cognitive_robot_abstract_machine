@@ -667,12 +667,16 @@ class AbstractRobot(Agent, HasRobotParts, ABC):
         return torso
 
     def get_left_arm_if_specified(self) -> Optional[Arm]:
+        if isinstance(self, HasLeftRightArm):
+            return self.left_arm
         for part in self._robot_parts:
             if isinstance(part, HasLeftRightArm):
                 return part.left_arm
         return None
 
     def get_right_arm_if_specified(self) -> Optional[Arm]:
+        if isinstance(self, HasLeftRightArm):
+            return self.right_arm
         for part in self._robot_parts:
             if isinstance(part, HasLeftRightArm):
                 return part.right_arm
