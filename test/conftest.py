@@ -323,6 +323,7 @@ def supported_abstract_robots():
         ICub3,
         UnitreeG1,
         MMPDresden,
+        # Garmi, We dont have the ROS Package yet
     ]
 
 
